@@ -32,3 +32,20 @@ dist/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local runtime data (created automatically on backend start)
+greenfleet.db
+*.sqlite3
+
+# Logs, caches, build output
+*.log
+logs/
+build/
+.cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
