@@ -1,0 +1,730 @@
+GREENFLEET AI - PROJECT KNOWLEDGE BASE
+======================================
+
+This file describes the whole project end to end, so that someone with no prior
+context can understand it, run it and rebuild it. Every statement is based on
+the code in this repository. Where the code does not answer a question, it is
+listed under "Open questions" (section 12).
+
+Last reviewed against commit history up to 2026-10-29.
+
+
+------------------------------------------------------------------------------
+1. PROJECT OVERVIEW
+------------------------------------------------------------------------------
+
+Purpose
+  GreenFleet AI is a fleet decarbonization and dispatch decision-support
+  platform. For a fleet of commercial vehicles and a set of delivery routes it:
+    - predicts fuel use and CO2 emissions for every (vehicle, route) pair,
+    - assigns vehicles to routes to minimise a combined fuel / CO2 / distance
+      cost while respecting payload and availability constraints,
+    - compares that plan against a naive "first available vehicle" baseline,
+    - reports savings in litres, kg CO2 and INR, and
+    - analyses driver telemetry to flag wasteful driving behaviour.
+
+Problem solved
+  Dispatchers typically assign whichever suitable vehicle is free, often
+  defaulting to diesel units. That ignores how much fuel and CO2 a specific
+  vehicle will burn on a specific route. GreenFleet makes that cost explicit
+  and optimises against it, with an adjustable carbon budget.
+
+Target users
+  Fleet dispatchers and operations managers (dashboard), sustainability /
+  ESG reporting staff (carbon ledger, economics), and developers integrating
+  the REST API.
+
+Current status
+  Working prototype / demo. All data is synthetic. The backend keeps most state
+  in memory (simulation state, routes, carbon ledger); only the vehicle
+  registry and driver-behaviour samples are persisted to a local SQLite file.
+  There is no authentication and no production deployment configuration.
+  The test suite (tests/ and ml_engine/tests/) passes: 79 tests.
+
+Naming
+  The code uses both "GreenFleet AI" and "GreenFlow AI" for the same product
+  (for example backend/app/core/config.py sets PROJECT_NAME = "GreenFlow AI").
+  They refer to the same system.
+
+
+------------------------------------------------------------------------------
+2. TECH STACK
+------------------------------------------------------------------------------
+
+Languages
+  Python 3.12 (backend, ML, simulation). The local environment used
+  Python 3.12.10.
+  JavaScript (ES modules, JSX) for the frontend.
+
+Backend (backend/requirements.txt, minimum versions; installed versions in
+parentheses were verified in the project virtual environment)
+  fastapi >= 0.110          (0.141.1)   REST API framework
+  uvicorn[standard] >= 0.28 (0.52.4)    ASGI server
+  pydantic >= 2.6           (2.13.4)    request/response schemas
+  pydantic-settings >= 2.2  (2.15.0)    Settings class in core/config.py
+  numpy >= 1.24             (2.5.2)
+  pandas >= 2.0             (3.0.5)
+  scikit-learn >= 1.3       (1.9.0)     ML pipelines, Hungarian fallback via scipy
+  scipy >= 1.11             (1.18.1)    linear_sum_assignment (Hungarian)
+  joblib >= 1.3             (1.5.3)     model (de)serialisation
+  pulp >= 2.8               (3.3.2)     MILP solver (bundled CBC binary)
+  sqlalchemy >= 2.0         (2.0.52)    SQLite persistence
+  pytest >= 8.0             (9.1.1)
+  httpx >= 0.27             (0.28.1)    FastAPI TestClient dependency
+
+ML engine (ml_engine/requirements.txt)
+  pandas, numpy, scikit-learn, joblib, lightgbm >= 4.0 (4.7.0),
+  matplotlib >= 3.7 (3.11.1), seaborn >= 0.12
+
+Root requirements.txt
+  fastapi, uvicorn, pydantic, pytest, python-dotenv, requests.
+  NOTE: this file alone is NOT enough to run the backend (it lacks numpy,
+  pandas, scikit-learn, scipy, pulp, sqlalchemy, pydantic-settings, lightgbm).
+  Install backend/requirements.txt and ml_engine/requirements.txt as well.
+  requests is needed by scripts/verify_p0_demo.py.
+
+Frontend (frontend/package.json)
+  react 19.2, react-dom 19.2
+  vite 8.2 (dev server and build), @vitejs/plugin-react 6
+  tailwindcss 4.3 via @tailwindcss/vite
+  recharts 3.10 (charts)
+  leaflet 1.9 + react-leaflet 5 (live map)
+  lucide-react (icons)
+  oxlint (linting, "npm run lint")
+  Local environment used Node v25.8.1 and npm 11.11.0.
+
+External services used by the frontend at runtime (no API keys required)
+  - OpenStreetMap tiles: https://{s}.tile.openstreetmap.org (map background)
+  - OSRM public router: https://router.project-osrm.org (road geometry for
+    drawing routes on the live map)
+  - Google Fonts stylesheet (frontend/src/index.css)
+
+Hardware / OS
+  No GPU needed. Everything runs on a normal laptop CPU. Developed on
+  Windows; nothing in the code is Windows-specific apart from the virtual
+  environment activation command.
+
+
+------------------------------------------------------------------------------
+3. FOLDER STRUCTURE
+------------------------------------------------------------------------------
+
+greenfleet-ai/
+  README.md                    Project front page.
+  PROJECT_KNOWLEDGE.txt        This file.
+  DATA_README.md               Where each dataset/model file lives and how to
+                               regenerate it.
+  requirements.txt             Minimal Python deps (see note in section 2).
+  pytest.ini                   Pytest config (adds "." and "backend" to path).
+  .gitignore                   Ignores venvs, node_modules, caches, .env,
+                               greenfleet.db, logs, build output.
+
+  backend/
+    requirements.txt           Full backend Python dependencies.
+    app/
+      main.py                  FastAPI app: CORS, router registration,
+                               "/", "/health", two direct helper endpoints.
+      api/                     REST routers (one file per area):
+        fleet.py               Vehicles (SQLite) and routes (in memory).
+        prediction.py          Batch fuel/CO2 prediction, telemetry analysis,
+                               remaining-range estimation.
+        optimization.py        Stateless assignment optimisation endpoint.
+        simulation.py          Stateful demo lifecycle (reset / peak /
+                               traffic / optimize), economics, what-if,
+                               scenarios, carbon budget, explanations.
+        benchmark.py           Baseline vs optimised KPI comparison.
+        forecasting.py         Single fuel/CO2 forecast endpoint.
+        scoring.py             Explainable vehicle-route suitability scores.
+        telemetry.py           Log/read per-vehicle driving-behaviour samples.
+        carbon_ledger.py       Carbon reduction ledger endpoints.
+        routes.py              Route listing router. NOT registered in
+                               main.py (unused).
+      core/                    Business logic:
+        config.py              Settings: emission factors, fuel prices (INR),
+                               carbon shadow price, default budget, cost/km.
+        db.py                  SQLAlchemy engine for greenfleet.db.
+        integration.py         Bridge: calls ml_engine for predictions (or a
+                               physics fallback) and runs the optimizer.
+        optimizer.py           optimize_routes(): single entry point that
+                               picks a solver and verifies the result.
+        quantum_optimizer.py   QuantumInspiredOptimizer: cost matrix,
+                               simulated annealing, MILP (PuLP), Hungarian.
+        carbon_governor.py     Carbon budget tracking and dynamic CO2 weight.
+        economics.py           Fuel cost, savings breakdown, recommendations,
+                               what-if simulation, 4-scenario matrix.
+        explainability.py      Per-assignment explanation and counterfactuals.
+        scoring.py             0-100 suitability scoring.
+        vehicle_registry.py    SQLite-backed vehicle roster (seeded on first
+                               run from simulation/dataset.py).
+        behavior_registry.py   SQLite-backed driving-behaviour samples and
+                               fuel multiplier.
+        vehicle_profiles.py    Engine/emission profile per vehicle type.
+      models/                  Pydantic schemas and SQLAlchemy ORM models
+                               (schemas.py = API contracts, db_models.py =
+                               tables, plus vehicle/route/assignment/
+                               simulation/economics/explainability/
+                               carbon_ledger models).
+      data/
+        sample_vehicles.json   Sample vehicles (not used by the registry).
+        sample_routes.json     Seed for the in-memory /api/fleet/routes list.
+
+  simulation/
+    dataset.py                 Deterministic demo fleet (20 vehicles) and
+                               12 routes.
+    scenarios.py               Normal / Peak Demand / High Traffic variants.
+    baseline.py                Naive first-fit "legacy dispatch" heuristic.
+    engine.py                  SimulationEngine singleton: holds state,
+                               runs optimisation, computes KPIs.
+    carbon_ledger.py           Thread-safe in-memory carbon ledger store.
+
+  ml_engine/
+    config.py                  Emission factors, INR fuel prices, vehicle
+                               profiles, behaviour thresholds, alert settings.
+    generate_data.py           Generates the synthetic trip dataset.
+    features.py                Feature engineering + preprocessing pipelines
+                               for both models.
+    train.py                   Trains Model 1 (trip fuel model).
+    evaluate.py                Produces evaluation plots for Model 1.
+    predict.py                 Public inference API: predict_trip(),
+                               conformal bounds, CO2, cost matrices, and
+                               re-exports telemetry functions.
+    simulation/generate_telemetry.py   Generates synthetic 1 Hz telemetry.
+    training/train_fuel_model.py       Trains Model 2 (telemetry model).
+    inference/                 fuel_predictor.py (Model 2 inference),
+                               behavior_detector.py, fuel_waste_estimator.py,
+                               refuel_predictor.py.
+    alerts/                    behavior_rules.py (rule per behaviour),
+                               alert_engine.py (stateful severity/debounce).
+    data/raw/                  fleet_data.csv, synthetic_telemetry.csv.
+    data/processed/            Feature-engineered copies of the raw CSVs.
+    models/                    fuel_model.pkl, telemetry_fuel_model.pkl,
+                               metrics JSON files, evaluation PNG plots.
+    tests/                     ML unit tests and a latency benchmark script.
+    test_inference.py          unittest contract tests for predict.py.
+    README.md                  ML engine notes (see section 11 for
+                               discrepancies with the code).
+
+  frontend/
+    package.json, vite.config.js   Vite dev server on port 5173, proxies
+                               /api to http://localhost:8000.
+    .env.example               VITE_API_URL placeholder.
+    index.html, src/main.jsx   Entry point.
+    src/App.jsx                Root component, tab switching
+                               (plan / live / analytics / settings).
+    src/services/api.js        All HTTP calls to the backend.
+    src/components/
+      plan/                    Plan & optimise console (routes, orders,
+                               timeline, what-if, scenario, "why" modals).
+      live/LiveTab.jsx         Live map (Leaflet + OSRM) and driver telemetry.
+      analytics/               Analytics tab and carbon ledger panels.
+      dashboard/               Older dashboard components (KPI grid, fleet
+                               status, recommendation panel, modals).
+      settings/SettingsTab.jsx Settings (fuel prices, vehicle registration).
+      common/                  Header, Sidebar, Panel, MetricCard.
+    reference/                 Two JPEG design reference images.
+    console.html               Standalone HTML page (not part of the Vite app).
+
+  tests/                       Backend pytest suite: contracts, carbon
+                               governor, hard cap, ledger, economics,
+                               explainability, risk prediction, telemetry.
+  scripts/verify_p0_demo.py    Calls a running backend through the whole
+                               demo flow and prints the numbers.
+  docs/                        Design notes: architecture, algorithm, API
+                               contract, data schema, carbon budget,
+                               explainability, risk-aware prediction,
+                               git workflow, a planning note.
+
+  Not in Git (regenerable or local):
+    .venv/                     Python virtual environment.
+    frontend/node_modules/     npm packages.
+    greenfleet.db              SQLite file, created automatically at startup.
+    .pytest_cache/, __pycache__/
+
+
+------------------------------------------------------------------------------
+4. ARCHITECTURE AND END-TO-END WORKFLOW
+------------------------------------------------------------------------------
+
+Components
+  [React UI :5173] --HTTP /api--> [FastAPI :8000]
+  (The Plan tab's route planning runs client-side only; see section 9.)
+       FastAPI --> SimulationEngine (simulation/engine.py, in memory)
+       SimulationEngine --> integration.predict_fuel_and_co2
+                              --> ml_engine.predict.predict_trip (Model 1)
+                                  or physics fallback
+                              x behaviour multiplier (SQLite samples)
+       SimulationEngine --> baseline heuristic (simulation/baseline.py)
+       SimulationEngine --> integration.run_greenflow_optimizer
+                              --> core/optimizer.optimize_routes
+                              --> QuantumInspiredOptimizer (SA / MILP / Hungarian)
+       SimulationEngine --> CarbonBudgetGovernor (dynamic CO2 weight)
+       SimulationEngine --> CarbonLedgerStore (records each optimisation run)
+       /api/predict/telemetry --> ml_engine alert engine (Model 2 + rules)
+
+Main demo flow (what the UI and scripts/verify_p0_demo.py do)
+  1. POST /api/simulate/reset
+     - Loads 12 routes (simulation/dataset.py) and the vehicle registry
+       (SQLite; seeded with the 20 demo vehicles on first run).
+     - Predicts fuel and CO2 for every vehicle x route pair.
+     - Computes the baseline plan: routes in list order, each given the first
+       free vehicle with enough payload capacity, diesel/petrol vehicles
+       queued first. Baseline fuel/CO2 is multiplied by a "legacy factor"
+       (1.15 for diesel, 1.05 otherwise) to represent unoptimised driving.
+     - Carbon governor budget reset to 1500 kg; projected = baseline CO2.
+     - Clears the carbon ledger.
+  2. Optional: POST /api/simulate/peak or /api/simulate/traffic
+     - Peak: raises route payloads 15-25% (some fixed values) and adds 3
+       high-priority routes (15 routes in total).
+     - Traffic: raises traffic_factor on urban/metro/district/airport routes.
+  3. POST /api/simulate/optimize
+     - Reads governor state; CO2 weight = dynamic penalty (1.0 to 5.0
+       depending on budget utilisation). If hard cap is enabled, the
+       budget is passed to the optimizer as a hard constraint.
+     - Recomputes predictions (so new behaviour samples take effect).
+     - Runs simulated annealing; if its result fails verification it falls
+       back to MILP (PuLP/CBC), and to Hungarian if CBC is unavailable.
+     - Computes baseline vs optimised KPIs (fuel, CO2, cost, utilisation,
+       inefficient assignments = fuel > 1.35x the cheapest feasible vehicle).
+     - Updates governor and records an entry in the carbon ledger.
+  4. GET endpoints read the results: /api/simulate/state, /economics,
+     /recommendation, /scenarios, /api/benchmark, /api/carbon/ledger,
+     /api/assignments/{vehicle_id}/explanation.
+
+Driver telemetry flow
+  - POST /api/predict/telemetry with a window of telemetry frames:
+    Model 2 predicts expected L/100 km for the latest frame, rule-based
+    detectors classify behaviour, fuel waste/cost/CO2 is estimated, remaining
+    range is computed, and a stateful alert engine assigns NORMAL / INFO /
+    WARNING / CRITICAL with escalation per vehicle.
+  - POST /api/telemetry/{vehicle_id} with brake_freq, gear_irregularity,
+    harsh_accel stores a sample in SQLite. The rolling score of the last 5
+    samples becomes a fuel multiplier (1.0 if score >= 70, up to about
+    1.45 at score 25) applied to that vehicle's predictions on the next
+    optimisation run.
+
+Stateless endpoints
+  - POST /api/optimize/assign: optimise any posted vehicles/routes
+    (uses MILP by default, SA as fallback).
+  - POST /api/predict/batch: predictions for posted (vehicle, route) pairs.
+  - POST /api/simulate/run: one-shot baseline vs optimised comparison using
+    the sample routes and multipliers (see gotcha in section 11).
+
+
+------------------------------------------------------------------------------
+5. DATASETS
+------------------------------------------------------------------------------
+
+All datasets are synthetic, generated by scripts in this repository with
+fixed seeds. No external download is needed. All files are small and are
+stored in plain Git (no Git LFS). See DATA_README.md for a file-by-file list.
+
+5.1 Trip dataset (Model 1)
+  File:        ml_engine/data/raw/fleet_data.csv
+  Generator:   python ml_engine/generate_data.py  (default 6000 rows, seed 42)
+  Size:        6000 rows x 18 columns, about 0.6 MB
+  How built:   60 random vehicles (types Van / Light Commercial / Truck /
+               Semi-Trailer / Bus; fuels Diesel / Petrol / Hybrid / CNG)
+               and 30 random routes are sampled into trips. Fuel is computed
+               from a base L/100 km table per (vehicle type, fuel type)
+               multiplied by age, load, traffic, speed, grade and weather
+               factors, plus 3% Gaussian noise.
+  Columns:
+    vehicle_id            Vehicle code, V001-V060
+    vehicle_type          Van, Light Commercial, Truck, Semi-Trailer, Bus
+    fuel_type             Diesel, Petrol, Hybrid, CNG (no Electric)
+    vehicle_age           Years, 1-12
+    fuel_capacity_l       Tank size by type
+    max_payload_kg        Capacity by type
+    available             Always True
+    route_id              R001-R030
+    origin, destination   Depot / zone names
+    distance_km           Trip distance (base 15-320 km plus noise)
+    required_payload_kg   10-95% of vehicle capacity
+    traffic_factor        1.0-2.5
+    priority              1-3
+    average_speed_kmph    18-105
+    road_grade            Percent grade, -5 to 6.5
+    weather_factor        1.0-1.35
+    fuel_consumed_l       TARGET: litres consumed on the trip
+  Preprocessing (ml_engine/features.py, FleetFeatureEngineer):
+    adds payload_capacity_ratio, speed_efficiency_deviation ((speed-65)^2),
+    traffic_speed_ratio, grade_distance_work, payload_tonnage,
+    weather_stress_index; then one-hot encodes vehicle_type and fuel_type
+    and standard-scales numeric features. Model input features are
+    vehicle_type, fuel_type, vehicle_age, required_payload_kg,
+    max_payload_kg, distance_km, traffic_factor, average_speed_kmph,
+    road_grade, weather_factor.
+  Split: random 70 / 15 / 15 (train / val / test), random_state 42.
+  Processed copy: ml_engine/data/processed/processed_fleet_data.csv
+    (6000 x 24, raw columns plus the engineered ones; written by train.py).
+
+5.2 Telemetry dataset (Model 2)
+  File:        ml_engine/data/raw/synthetic_telemetry.csv
+  Generator:   python ml_engine/simulation/generate_telemetry.py
+  Size:        5760 rows x 26 columns, about 1 MB
+  Content:     1 Hz telemetry frames per vehicle trip with a scripted driving
+               behaviour. Columns: vehicle_id, timestamp, vehicle_type,
+               vehicle_age_years, engine_size_l, vehicle_weight_kg,
+               fuel_type, latitude, longitude, speed_kmph,
+               acceleration_mps2, rpm, gear, throttle_position_pct,
+               brake_pressure_pct, engine_load_pct, road_slope_pct,
+               road_type, traffic_level, ambient_temperature_c,
+               distance_travelled_km, idle_duration_sec, fuel_level_l,
+               fuel_rate_lph, fuel_consumption_l_100km (TARGET),
+               behavior_label. ml_engine/README.md has a unit/meaning table.
+  Preprocessing (TelemetryFeatureEngineer):
+    adds speed_efficiency_deviation, rpm_per_speed_ratio,
+    kinetic_power_proxy, slope_gravity_work, thermal_stress_index;
+    one-hot encodes vehicle_type, fuel_type, road_type, traffic_level.
+    Rows with speed <= 1 km/h are excluded from training (idle frames).
+  Split: 70 / 15 / 15 random row-level split, random_state 42 (see the
+    leakage note in section 10).
+  Processed copy: ml_engine/data/processed/processed_telemetry.csv
+    (5760 x 31).
+
+5.3 Demo fleet and routes (simulation)
+  simulation/dataset.py hard-codes 20 vehicles (5 Van, 5 Light Commercial,
+  6 Truck, 4 Semi-Trailer; 13 Diesel, 4 Hybrid, 2 CNG, 1 Petrol; 2 marked
+  unavailable) and 12 routes. These seed the SQLite vehicle registry on first
+  start and drive every simulation scenario.
+
+5.4 Sample JSON
+  backend/app/data/sample_routes.json seeds the in-memory /api/fleet/routes
+  list used by /api/simulate/run. sample_vehicles.json is not read by the
+  current registry.
+
+Known data issues
+  - Synthetic only; no real vehicle data.
+  - Model 1 never saw Electric vehicles or the newer vehicle types
+    ("Standard", "Commercial Truck", "Hazmat truck"). integration.py routes
+    any type outside {Van, Light Commercial, Truck, Semi-Trailer, Bus} to the
+    physics fallback.
+
+
+------------------------------------------------------------------------------
+6. IMPLEMENTATION DETAILS
+------------------------------------------------------------------------------
+
+6.1 Model 1 - trip fuel model (ml_engine/train.py)
+  Candidates: LightGBM LGBMRegressor (n_estimators=300, learning_rate=0.05,
+  num_leaves=31, subsample=0.85, colsample_bytree=0.85, seed 42), Linear
+  Regression, Random Forest (150 trees, max_depth 16). If LightGBM is not
+  installed, sklearn HistGradientBoostingRegressor is used instead.
+  Selection: highest validation R^2. Saved as ml_engine/models/fuel_model.pkl
+  (a full sklearn Pipeline) with ml_engine/models/evaluation_metrics.json.
+  Recorded results (evaluation_metrics.json, best = lightgbm):
+                     MAE (L)   RMSE (L)   R^2      MAPE
+    LightGBM  test   1.954     3.151      0.994    4.16%
+    LightGBM  val    1.968     3.315      0.9937   4.20%
+    RandomF.  test   2.712     4.390      0.9884   5.51%
+    Linear    test  10.707    14.430      0.8752  50.34%
+  Plots: ml_engine/evaluate.py writes actual_vs_predicted.png,
+  feature_importance.png and residual_analysis.png to ml_engine/models/.
+
+6.2 Model 2 - telemetry fuel-rate model (ml_engine/training/train_fuel_model.py)
+  Same three candidates and selection rule; target is fuel_consumption_l_100km.
+  Saved as ml_engine/models/telemetry_fuel_model.pkl with
+  telemetry_evaluation_metrics.json.
+  Recorded results (best = random_forest; is_lightgbm_native = false, i.e. the
+  "lightgbm" row was trained with the HistGradientBoosting substitute):
+                     MAE      RMSE     R^2      MAPE
+    RandomF.  test   0.179    0.651    0.999    0.57%
+    RandomF.  val    0.184    0.593    0.9991   0.57%
+    GBDT      test   0.398    1.134    0.9968   1.10%
+    Linear    test   5.229    6.816    0.8861  18.09%
+  Note: the stored artifact is a RandomForest pickled with scikit-learn
+  1.8.0; loading it under 1.9.0 shows an InconsistentVersionWarning.
+
+6.3 Prediction with uncertainty (ml_engine/predict.py)
+  predict_trip(vehicle, route, risk_aversion_lambda) returns predicted fuel,
+  90% interval bounds, uncertainty, risk-adjusted fuel and CO2.
+    uncertainty = q_hat * dispersion
+      q_hat = 1.805 (90%) or 2.546 (95%) - hard-coded constants
+      dispersion = 1 + 0.35*max(0, traffic-1) + 0.25*payload_ratio
+                   + 0.04*age + 0.15*max(0, weather-1) + 0.05*|grade|
+    risk_adjusted_fuel = predicted + lambda * uncertainty
+    CO2 = fuel * emission factor (Diesel 2.68, Petrol 2.31, Hybrid 1.85,
+          CNG 1.95, Electric 0.45, default 2.65 kg per unit)
+  If the pickle cannot be loaded, predict_fuel uses a simple per-fuel-type
+  physics formula.
+
+6.4 Physics fallback (backend/app/core/integration.py)
+  Used for vehicle types the ML model was not trained on, or if ml_engine
+  fails to import:
+    fuel = base_L_per_100km(type profile) * distance/100
+           * (1 + 0.35*load_ratio) * (1 + 0.6*(traffic-1)) * (1 + 0.015*age)
+    with powertrain adjustment (Hybrid x0.75, CNG x0.90, Petrol x1.10).
+    CO2 = fuel * fuel emission factor * vehicle-type CO2 factor.
+
+6.5 Optimizer (backend/app/core/quantum_optimizer.py, optimizer.py)
+  Problem: binary x_ij (vehicle i serves route j), each vehicle at most one
+  route, each route at most/exactly one vehicle.
+  Cost per cell: risk-adjusted fuel * fuel_weight + CO2 * co2_weight
+    + distance * traffic * distance_weight + capacity terms, scaled by route
+    priority. Missing prediction = cost 1e9.
+  Defaults (OptimizationConfig): fuel_weight 1.0, co2_weight 1.0,
+    distance_weight 0.3, risk_aversion_lambda 0.5, imbalance_weight 0.5,
+    capacity_shortfall_penalty 5000, constraint_penalty 50000,
+    SA initial_temp 1000, cooling_rate 0.995, min_temp 1e-3,
+    max_iterations 20000, optional carbon_budget_kg + enforce_carbon_hard_cap.
+  Solvers:
+    - Simulated annealing ("quantum_inspired"): random feasible start;
+      moves = drop, add, swap, reassign; Metropolis acceptance. Constraints
+      are soft penalties. Described in docs/algorithm.md as a classical
+      stand-in for quantum annealing (no quantum hardware is used).
+    - MILP ("classical_baseline"/"milp"): PuLP with CBC; hard constraints
+      for coverage, one route per vehicle, availability, capacity and the
+      optional carbon cap.
+    - Hungarian ("hungarian"): scipy linear_sum_assignment with 1e9
+      penalties; infeasible pairs are dropped.
+  optimize_routes() verifies the SA result and falls back to MILP if it is
+  invalid (unless a hard cap is active and SA respected it).
+
+6.6 Carbon budget governor (backend/app/core/carbon_governor.py)
+  Utilisation = projected CO2 / budget. Status thresholds: HEALTHY <= 70%,
+  WARNING <= 90%, CRITICAL <= 100%, OVER_BUDGET above.
+  Dynamic CO2 weight: 1.0 (healthy), 1.0-1.8 (warning), 1.8-3.0 (critical),
+  3.0-5.0 (over budget). Default budget 1500 kg. Hard cap is off by default
+  and is enabled with POST /api/simulate/carbon-budget {"hard_cap": true}.
+
+6.7 Economics (backend/app/core/economics.py)
+  Default prices (INR): diesel 95/L, petrol 102/L, CNG 85/kg,
+  electricity 9/kWh; carbon shadow price 2500 INR per tonne CO2.
+  Produces direct fuel cost saved, avoided-carbon shadow value, combined
+  impact, dispatcher recommendation text, non-mutating what-if projection
+  (carbon budget 500-5000 kg, traffic multiplier 0.5-2.5, lambda 0-2,
+  fuel price) and a 4-scenario matrix (Normal, Peak Demand, High Traffic,
+  Carbon-Constrained).
+
+6.8 Explainability and scoring
+  core/explainability.py builds a per-assignment explanation with factor
+  breakdown, best feasible alternative and counterfactual sensitivity.
+  core/scoring.py computes 0-100 suitability scores for vehicle-route pairs.
+
+6.9 Telemetry behaviour detection (ml_engine/inference, ml_engine/alerts)
+  Behaviours: normal, excessive_revving, harsh_acceleration,
+  downhill_acceleration, inefficient_gear, excessive_idling.
+  Thresholds (ml_engine/config.py): harsh accel >= 2.5 m/s^2, downhill slope
+  <= -1.8%, idle >= 45 s (critical 180 s), fuel deviation info/warning/
+  critical at +12/+25/+45%.
+  Alert escalation: CRITICAL if persistence >= 60 samples, deviation >= 45%
+  or waste cost >= 25 INR; WARNING at >= 25 samples, >= 25% or >= 8 INR;
+  otherwise INFO. State is kept per vehicle in memory.
+
+6.10 Carbon ledger (simulation/carbon_ledger.py)
+  Every /api/simulate/optimize run appends an entry: baseline vs optimised
+  CO2, avoided kg and tonnes, "potential credit equivalent" (1 per tonne),
+  shadow value. Entries are labelled "Not verified" / "Quantification only".
+  In memory only; cleared on reset and on server restart.
+
+6.11 Tests
+  tests/ (backend, pytest) and ml_engine/tests/ plus ml_engine/test_inference.py.
+  Running "pytest tests ml_engine/tests" gave 79 passed (about 105 s).
+  ml_engine/tests/benchmark_latency.py is a latency benchmark script.
+
+
+------------------------------------------------------------------------------
+7. CONFIGURATION AND ENVIRONMENT
+------------------------------------------------------------------------------
+
+Environment variables
+  VITE_API_URL   (frontend, optional) backend base URL. Default
+                 http://localhost:8000. Template: frontend/.env.example.
+  Backend: core/config.py uses pydantic-settings, so any Settings field
+  (for example RANDOM_SEED, CARBON_SHADOW_PRICE_INR_PER_TONNE,
+  DEFAULT_SHIFT_CARBON_BUDGET_KG) can be overridden by an environment
+  variable of the same name. None are required.
+  No API keys, tokens or passwords are used anywhere in the project.
+
+Config files
+  backend/app/core/config.py   Backend constants (prices, factors, budget).
+  ml_engine/config.py          ML constants and behaviour thresholds.
+  frontend/vite.config.js      Port 5173 and /api proxy to :8000.
+  pytest.ini                   Test path configuration.
+
+Database
+  SQLite file greenfleet.db in the repository root, created automatically
+  (backend/app/core/db.py). Tables: vehicles (registry) and behaviour log.
+  Seeded with the 20 demo vehicles on first access. Delete the file to reset
+  the registry and behaviour history.
+
+CORS
+  allow_origins = ["*"] (development setting).
+
+
+------------------------------------------------------------------------------
+8. SETUP AND RUN GUIDE (fresh clone)
+------------------------------------------------------------------------------
+
+Prerequisites: Python 3.12, Node.js 20.19+ or 22.12+ (required by Vite 8)
+with npm, Git.
+
+  git clone <repository-url> greenfleet-ai
+  cd greenfleet-ai
+
+Backend
+  python -m venv .venv
+  .venv\Scripts\activate          (Windows)
+  source .venv/bin/activate       (Linux/macOS)
+  pip install -r requirements.txt -r backend/requirements.txt -r ml_engine/requirements.txt
+  uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
+  -> API docs at http://127.0.0.1:8000/docs
+
+Frontend (second terminal)
+  cd frontend
+  npm install
+  (optional) copy .env.example to .env and edit VITE_API_URL
+  npm run dev
+  -> http://localhost:5173
+
+Data and models
+  Already in the repository. To regenerate:
+  python ml_engine/generate_data.py
+  python ml_engine/train.py
+  python ml_engine/evaluate.py
+  python ml_engine/simulation/generate_telemetry.py
+  python ml_engine/training/train_fuel_model.py
+
+Tests
+  pytest tests ml_engine/tests
+
+End-to-end demo check (backend must be running)
+  python scripts/verify_p0_demo.py
+
+Frontend production build
+  cd frontend && npm run build    (output in frontend/dist, git-ignored)
+
+
+------------------------------------------------------------------------------
+9. DEPLOYMENT / USAGE
+------------------------------------------------------------------------------
+
+  Runs locally only; there is no Dockerfile, CI or cloud configuration.
+  main.py can also be started with "python backend/app/main.py" (binds
+  0.0.0.0:8000 with reload).
+
+Example: run the demo flow with curl
+  curl -X POST http://127.0.0.1:8000/api/simulate/reset
+  curl -X POST http://127.0.0.1:8000/api/simulate/peak
+  curl -X POST http://127.0.0.1:8000/api/simulate/optimize
+  curl http://127.0.0.1:8000/api/simulate/economics
+  curl http://127.0.0.1:8000/api/assignments/V001/explanation
+  Output: JSON with vehicles, routes, baseline and optimised assignments,
+  benchmark deltas (fuel_saved_l, co2_reduced_kg, cost_saved), and carbon
+  budget state (budget_utilisation_pct, status, dynamic_co2_penalty).
+  Exact numbers depend on the vehicle registry contents and on the random
+  simulated annealing run.
+
+Example: telemetry analysis
+  POST /api/predict/telemetry
+  {"window": [{"vehicle_id": "V001", "vehicle_type": "Van",
+    "fuel_type": "Hybrid", "speed_kmph": 72, "acceleration_mps2": 3.6,
+    "rpm": 3900, "gear": 2, "throttle_position_pct": 92,
+    "brake_pressure_pct": 80, "engine_load_pct": 96,
+    "fuel_level_l": 44, "idle_duration_sec": 25}]}
+  Response fields: behaviour, severity, behaviour_score,
+  fuel_deviation_pct, fuel_wasted_l, estimated_cost_inr, co2_impact_kg,
+  remaining_range_km, refuel_required, message.
+
+Example: log a driving-behaviour sample
+  POST /api/telemetry/V001  {"brake_freq": 8, "gear_irregularity": 30,
+                             "harsh_accel": 5}
+  -> {"vehicle_id": "V001", "score": ..., "rolling_score": ...,
+      "behavior_multiplier": ...}
+
+UI tabs: Plan (routes, orders, timeline, what-if, scenarios, "why"
+explanations, shift summary), Live (map and driver telemetry), Analytics
+(including carbon ledger), Settings.
+
+What the active UI actually calls (frontend/src/App.jsx and the components
+it mounts):
+  - Plan tab "Plan Routes" and "Simulate Peak Demand" do NOT call the
+    backend. App.jsx defines its own 5 vehicles (VEHICLES_INIT) and 5
+    Chennai-area routes (ROUTES_BASE) and sets preset assignments after a
+    700 ms timeout, with display-only "solver log" text.
+  - Backend calls from the mounted UI: /api/simulate/recommendation,
+    /api/assignments/{id}/explanation (Why modal), /api/simulate/what-if,
+    /api/simulate/scenarios, /api/carbon/ledger, /api/predict/telemetry
+    (Live tab), /api/fleet/vehicle-types, POST /api/fleet/vehicles and
+    /api/simulate/carbon-budget (Settings).
+  - frontend/src/components/dashboard/Dashboard.jsx is a backend-driven
+    dashboard (reset / peak / traffic / optimize / benchmark / economics)
+    but it is not imported by App.jsx.
+  - Because nothing in the mounted UI calls /api/simulate/optimize, the
+    carbon ledger stays empty until the optimiser is run via the API or
+    scripts/verify_p0_demo.py.
+
+
+------------------------------------------------------------------------------
+10. KNOWN BUGS, LIMITATIONS, TODOS
+------------------------------------------------------------------------------
+
+  - All data is synthetic; models are not validated on real fleets.
+  - Simulation state, routes, alert state and the carbon ledger are in
+    memory and lost on restart. Global singletons mean all users share
+    one state; not suitable for multi-user use.
+  - No authentication; CORS allows all origins.
+  - The telemetry split is a random row-level split even though the
+    docstring calls it trip-aware. Adjacent 1 Hz frames from the same trip
+    can land in both train and test, so Model 2 test scores are likely
+    optimistic.
+  - Conformal q_hat values are hard-coded constants, not recalculated from a
+    calibration set in the current code.
+  - Model 2 artifact was pickled with scikit-learn 1.8.0 (version warning
+    under 1.9.0). Retrain after upgrading scikit-learn.
+  - Root requirements.txt is incomplete for running the backend.
+  - pytest.ini sets testpaths = backend/tests, which does not exist; pass
+    the test folders explicitly.
+  - backend/app/api/routes.py is never registered; sample_vehicles.json is
+    unused.
+  - The simulation router is mounted twice (/api/simulate/... and
+    /api/simulation/simulate/...).
+  - The Live tab depends on public OpenStreetMap and OSRM servers.
+  - The Plan tab is not wired to the backend optimiser (see section 9).
+    Wiring it up, or mounting Dashboard.jsx, is the main integration gap.
+  - Future ideas stated in ml_engine/README.md: replace synthetic telemetry
+    with real CAN-bus / OBD-II data and retrain.
+
+
+------------------------------------------------------------------------------
+11. DECISIONS AND GOTCHAS
+------------------------------------------------------------------------------
+
+  - Simulated annealing is presented as "quantum-inspired"; it is a classical
+    algorithm running on CPU. MILP is kept as an exact reference and as the
+    fallback when SA output fails verification.
+  - One route per vehicle per planning window is a deliberate modelling
+    choice (no max_routes field in the shared contract).
+  - Unknown vehicle types bypass the ML model on purpose, because the
+    one-hot encoder would ignore them and give misleading predictions.
+  - Baseline numbers include a "legacy factor" (x1.15 diesel, x1.05 other)
+    on top of model predictions, so part of the reported saving comes from
+    that assumption, not only from reassignment.
+  - POST /api/simulate/run: if the baseline is not worse than the
+    optimised result, the code sets baseline fuel = optimised x 1.30 and
+    baseline CO2 = optimised x 1.35. This endpoint also prices fuel at a
+    flat 1.65 USD/L, while the rest of the system uses INR.
+  - Behaviour score formula mirrors the client-side formula in LiveTab.jsx
+    so the persisted score matches what the UI shows.
+  - The existing ml_engine/README.md and older README text contain figures
+    that differ from the code: telemetry model is described as LightGBM with
+    test R^2 0.9990 (the stored best model is Random Forest, test R^2 0.999);
+    petrol 105 INR/L and EV 8 INR/kWh (code: 102 and 9); dynamic penalty
+    1.0-2.0x (code: up to 5.0x). The numbers in this file come from the code
+    and the metrics JSON files.
+  - greenfleet.db holds any vehicles registered through the UI. It is not
+    in Git; back it up separately if those registrations matter.
+
+
+------------------------------------------------------------------------------
+12. OPEN QUESTIONS
+------------------------------------------------------------------------------
+
+  - How were the conformal constants q_hat = 1.805 / 2.546 derived? No
+    calibration script is present.
+  - The latency figures in ml_engine/README.md (about 17 ms per frame) were
+    not re-measured.
+  - The README previously referenced an MIT LICENSE file, but no LICENSE
+    file exists in the repository. Licensing is undecided.
+  - Purpose of frontend/console.html and the dashboard/ component folder
+    relative to the current tabbed UI (they look like an earlier version).
